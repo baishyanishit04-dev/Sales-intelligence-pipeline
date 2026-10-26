@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PT Follow-up Tracker</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2430;--mute:#6b7685;--line:#e3e7ee;--pri:#1f6feb;--ok:#1a7f4b;--warn:#b7791f;--bad:#c0392b}
+@media(prefers-color-scheme:dark){:root{--bg:#12161c;--card:#1b212b;--ink:#e8edf4;--mute:#93a0b2;--line:#2b3442;--pri:#5b9dff;--ok:#4cc38a;--warn:#e0b050;--bad:#ff7b6b}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line)}
+h1{font-size:18px;margin:0 auto 0 0}main{max-width:1200px;margin:0 auto;padding:16px 20px}
+button,select,input,textarea{font:inherit;color:inherit}
+button{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
+button.pri{background:var(--pri);border-color:var(--pri);color:#fff}button:hover{filter:brightness(.96)}
+input,select,textarea{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;cursor:pointer}
+.stat b{display:block;font-size:22px}.stat span{color:var(--mute);font-size:12px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+th{font-size:12px;color:var(--mute);background:var(--bg)}
+.pill{padding:2px 8px;border-radius:99px;font-size:12px;border:1px solid currentColor;white-space:nowrap}
+.s-none{color:var(--mute)}.s-sent{color:var(--warn)}.s-ack{color:var(--pri)}.s-sub{color:var(--ok)}.s-rev{color:var(--bad)}
+.due-bad{color:var(--bad);font-weight:600}.due-soon{color:var(--warn);font-weight:600}
+dialog{border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);max-width:640px;width:94%;padding:18px}
+dialog::backdrop{background:#0006}
+label{display:block;margin:8px 0 3px;color:var(--mute);font-size:12px}
+.row{display:flex;gap:8px}.row>*{flex:1}
+textarea{width:100%;min-height:150px;font-family:inherit}
+.chk{display:block;margin:4px 0;color:var(--ink);font-size:14px}
+.log{font-size:12px;color:var(--mute);max-height:100px;overflow:auto;margin-top:8px}
+.muted{color:var(--mute)}.right{text-align:right}
+</style>
+</head>
+<body>
+<header>
+  <h1>Professional Tax Follow-up Tracker</h1>
+  <label style="margin:0">Period
+    <input type="month" id="period">
+  </label>
+  <button onclick="openAdd()">+ Add employer</button>
+  <button onclick="document.getElementById('csv').click()">Import CSV</button>
+  <input type="file" id="csv" accept=".csv" hidden>
+  <button onclick="exportCsv()">Export CSV</button>
+  <button onclick="openSettings()">Settings</button>
+</header>
+<main>
+  <div class="stats" id="stats"></div>
+  <div class="bar">
+    <input id="q" placeholder="Search employer / contact" oninput="render()" style="min-width:220px">
+    <select id="filter" onchange="render()"></select>
+    <button class="pri" onclick="startQueue()">▶ Send today's reminders (queue)</button>
+    <span class="muted" id="hint"></span>
+  </div>
+  <table>
+    <thead><tr><th>Employer</th><th>Contact</th><th>Due</th><th>Reminder stage</th><th>Docs</th><th>Doc status</th><th>PT payment</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</main>
+
+<dialog id="dlg"></dialog>
+
+<script>
+const DOCS = ["Salary register / payroll sheet","Employee list with gross salary","Headcount changes (joiners / leavers)","Previous month PT challan (if paid)"];
+const STATUS = {none:"Not contacted",sent:"Reminder sent",ack:"Acknowledged",sub:"Successfully submitted",rev:"Revision needed"};
+const DEFAULT_SETTINGS = {
+  firm:"Your Firm Name", sender:"Your Name", phone:"", email:"",
+  dueMonthOffset:1, dueDay:31, leadDays:2, repeatDays:2, lang:"en", autoOn:false, autoTime:"09:00", lastAuto:""
+};
+let S = {...DEFAULT_SETTINGS, ...load("pt_settings", {})};
+let employers = load("pt_employers_v3", null) || sample();
+let records = load("pt_records", {}); // key: employerId|YYYY-MM
+function load(k,d){try{return JSON.parse(localStorage.getItem(k))||d}catch(e){return d}}
+function save(){localStorage.setItem("pt_settings",JSON.stringify(S));localStorage.setItem("pt_employers_v3",JSON.stringify(employers));localStorage.setItem("pt_records",JSON.stringify(records))}
+function sample(){
+  const n=["Sai Textiles","Shree Pharma","Kolhapur Foods","Pune Auto Parts","Nashik Agro","Mumbai Logistics","Deccan Steel","Konkan Spices"];
+  return Array.from({length:200},(_,i)=>{const x=n[i%n.length]+(i>=n.length?" "+(Math.floor(i/n.length)+1):"");
+    return {id:"e"+i,name:x,contact:"Owner "+(i+1),phone:"9"+String(800000000+i*1111).padStart(9,"0"),email:"accounts@"+x.toLowerCase().replace(/\s/g,"")+".example.in",employees:10+(i*7)%90}});
+}
+const pad=n=>String(n).padStart(2,"0");
+const today=()=>{const d=new Date();return new Date(d.getFullYear(),d.getMonth(),d.getDate())};
+const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+function dueDate(period){
+  const [y,m]=period.split("-").map(Number);
+  const last=new Date(y,m-1+S.dueMonthOffset+1,0).getDate();
+  return new Date(y,m-1+S.dueMonthOffset,Math.min(S.dueDay,last));
+}
+function rec(e){
+  const k=e.id+"|"+P();
+  if(!records[k])records[k]={status:"none",docs:[],note:"",lastReminder:null,log:[],due:iso(dueDate(P()))};
+  const x=records[k];if(!x.pay)x.pay={paid:false,amount:"",date:"",challan:""};
+  return x;
+}
+const P=()=>document.getElementById("period").value;
+function daysTo(r){return Math.round((new Date(r.due+"T00:00")-today())/864e5)}
+function stage(r){
+  if(r.pay&&r.pay.paid)return {t:"Paid",k:"done"};
+  const d=daysTo(r);
+  if(d<0)return {t:`Overdue ${-d}d`,k:"overdue"};
+  if(d<=S.leadDays)return {t:d===0?"Due today":`T-${d}: send reminder`,k:"soon"};
+  return {t:`Due in ${d}d`,k:"wait"};
+}
+function needsReminder(e,r){
+  const s=stage(r);
+  if(r.pay&&r.pay.paid||r.status==="sub"||r.status==="ack"&&s.k==="wait")return false;
+  if(s.k==="wait"||s.k==="done")return false;
+  if(r.status==="rev")return true;
+  if(!r.lastReminder)return true;
+  const since=Math.round((today()-new Date(r.lastReminder+"T00:00"))/864e5);
+  return since>=S.repeatDays;
+}
+function filtered(){
+  const q=document.getElementById("q").value.toLowerCase(),f=document.getElementById("filter").value;
+  return employers.filter(e=>{
+    const r=rec(e);
+    if(q&&!(e.name+e.contact).toLowerCase().includes(q))return false;
+    if(f==="due")return needsReminder(e,r);
+    if(f==="overdue")return stage(r).k==="overdue";
+    if(f==="paid")return r.pay.paid;
+    if(f==="unpaid")return !r.pay.paid;
+    if(f&&f!=="all")return r.status===f;
+    return true;
+  });
+}
+function render(){
+  const f=document.getElementById("filter");
+  if(!f.options.length){f.innerHTML=`<option value="all">All</option><option value="due">Reminder due today</option><option value="overdue">Overdue</option><option value="paid">PT paid</option><option value="unpaid">PT not paid</option>`+Object.entries(STATUS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");}
+  const all=employers.map(e=>rec(e));
+  const c=k=>all.filter(r=>r.status===k).length;
+  const dueN=employers.filter(e=>needsReminder(e,rec(e))).length;
+  const st=[["all","Employers",employers.length],["due","Reminder due today",dueN],["overdue","Overdue",all.filter(r=>stage(r).k==="overdue").length],["ack","Acknowledged",c("ack")],["sub","Submitted",c("sub")],["rev","Revision needed",c("rev")],["paid","PT paid",all.filter(r=>r.pay.paid).length],["unpaid","PT not paid",all.filter(r=>!r.pay.paid).length]];
+  document.getElementById("stats").innerHTML=st.map(([k,l,n])=>`<div class="stat" onclick="document.getElementById('filter').value='${k}';render()"><b>${n}</b><span>${l}</span></div>`).join("");
+  document.getElementById("hint").textContent=`${dueN} reminder(s) pending`;
+  document.getElementById("rows").innerHTML=filtered().map(e=>{
+    const r=rec(e),s=stage(r);
+    const cls=s.k==="overdue"?"due-bad":s.k==="soon"?"due-soon":"";
+    return `<tr><td><b>${esc(e.name)}</b><div class="muted">${e.employees||"?"} employees</div></td>
+    <td>${esc(e.contact)}<div class="muted">${esc(e.phone)} · ${esc(e.email)}</div></td>
+    <td>${r.due}</td><td class="${cls}">${s.t}</td>
+    <td>${r.docs.length}/${DOCS.length}</td>
+    <td><span class="pill s-${r.status}">${STATUS[r.status]}</span></td>
+    <td>${r.pay.paid?`<span class="pill s-sub">Paid</span><div class="muted">${r.pay.amount?"₹"+esc(r.pay.amount)+" · ":""}${esc(r.pay.date)}</div>`:`<span class="pill s-none">Not paid</span>`}</td>
+    <td class="right"><button class="pri" onclick="openEmp('${e.id}')">Open</button></td></tr>`}).join("")||`<tr><td colspan="8" class="muted">No employers match.</td></tr>`;
+  save();
+}
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+/* ---------- message scripts ---------- */
+function periodLabel(){const [y,m]=P().split("-").map(Number);return new Date(y,m-1,1).toLocaleString("en-IN",{month:"long",year:"numeric"})}
+function fmtDue(r){return new Date(r.due+"T00:00").toLocaleDateString("en-IN",{day:"numeric",month:"long",year:"numeric"})}
+function docList(r,missingOnly){
+  const l=DOCS.filter((d,i)=>!missingOnly||!r.docs.includes(i));
+  return l.map((d,i)=>`${i+1}. ${d}`).join("\n");
+}
+function buildMsg(e,r,type){
+  const L=periodLabel(),D=fmtDue(r),sig=`${S.sender}\n${S.firm}${S.phone?"\n"+S.phone:""}`;
+  const mr=S.lang==="mr";
+  if(type==="rev"){
+    return mr?`नमस्कार ${e.contact},\n\n${L} साठी तुम्ही पाठवलेल्या कागदपत्रांमध्ये काही सुधारणा आवश्यक आहेत:\n\n${r.note||"(तपशील)"}\n\nकृपया सुधारित कागदपत्रे लवकरात लवकर पाठवा. देय तारीख: ${D}.\n\nधन्यवाद,\n${sig}`
+    :`Hello ${e.contact},\n\nThank you for sending the ${L} documents for ${e.name}. We need a correction before we can proceed:\n\n${r.note||"(details)"}\n\nPlease resend the revised documents as soon as possible. Professional Tax due date: ${D}.\n\nThank you,\n${sig}`;
+  }
+  const over=stage(r).k==="overdue";
+  if(mr)return `नमस्कार ${e.contact},\n\n${e.name} चा ${L} चा व्यवसाय कर (Professional Tax) भरण्याची अंतिम तारीख ${D} आहे${over?" — ती उलटून गेली आहे":""}.\n\nकृपया खालील कागदपत्रे आजच पाठवा:\n${docList(r,true)}\n\nकागदपत्रे मिळाल्यावर आम्ही तपासणी करून कर भरण्याची प्रक्रिया पूर्ण करू. कृपया "मिळाले/Received" असे उत्तर द्या.\n\nधन्यवाद,\n${sig}`;
+  return `Hello ${e.contact},\n\n${over?"This is a follow-up: the":"Friendly reminder: the"} Professional Tax payment for ${e.name} (${L}) is due on ${D}${over?" and is now overdue":" — in "+daysTo(r)+" day(s)"}.\n\nTo assess and file on time, please send us:\n${docList(r,true)}\n\nPlease reply "RECEIVED" to confirm, and share the documents on this WhatsApp number or by email.\n\nThank you,\n${sig}`;
+}
+function subject(e,r,type){return type==="rev"?`Revision needed – ${periodLabel()} PT documents – ${e.name}`:`Reminder: Professional Tax ${periodLabel()} due ${fmtDue(r)} – ${e.name}`}
+function waUrl(e,msg){let p=String(e.phone).replace(/\D/g,"");if(p.length===10)p="91"+p;return `https://wa.me/${p}?text=${encodeURIComponent(msg)}`}
+function mailUrl(e,sub,msg){return `mailto:${e.email}?subject=${encodeURIComponent(sub)}&body=${encodeURIComponent(msg)}`}
+
+/* ---------- employer dialog ---------- */
+function openEmp(id){
+  const e=employers.find(x=>x.id===id),r=rec(e),type=r.status==="rev"?"rev":"rem";
+  const d=document.getElementById("dlg");
+  d.innerHTML=`<h3 style="margin:0">${esc(e.name)} <span class="muted">· ${periodLabel()}</span></h3>
+  <div class="row"><div><label>Status</label><select id="st" onchange="saveEmp('${id}')">${Object.entries(STATUS).map(([k,v])=>`<option value="${k}" ${r.status===k?"selected":""}>${v}</option>`).join("")}</select></div>
+  <div><label>Due date</label><input type="date" id="due" value="${r.due}" onchange="saveEmp('${id}')"></div></div>
+  <label>Documents received</label>
+  ${DOCS.map((x,i)=>`<label class="chk"><input type="checkbox" class="dc" data-i="${i}" ${r.docs.includes(i)?"checked":""} onchange="saveEmp('${id}')"> ${x}</label>`).join("")}
+  <label>Professional Tax payment</label>
+  <div class="row"><select id="pp" onchange="saveEmp('${id}')"><option value="0" ${r.pay.paid?"":"selected"}>Not paid</option><option value="1" ${r.pay.paid?"selected":""}>Paid</option></select>
+  <input id="pa" type="number" placeholder="Amount (₹)" value="${esc(r.pay.amount)}" onchange="saveEmp('${id}')">
+  <input id="pd" type="date" value="${esc(r.pay.date)}" onchange="saveEmp('${id}')">
+  <input id="pc" placeholder="Challan / ref no." value="${esc(r.pay.challan)}" onchange="saveEmp('${id}')"></div>
+  <label>Revision note (what needs fixing)</label><input id="note" style="width:100%" value="${esc(r.note)}" onchange="saveEmp('${id}');refreshMsg('${id}')">
+  <label>Message <select id="mt" onchange="refreshMsg('${id}')"><option value="rem" ${type==="rem"?"selected":""}>Reminder</option><option value="rev" ${type==="rev"?"selected":""}>Revision request</option></select></label>
+  <textarea id="msg"></textarea>
+  <div class="bar" style="margin-top:8px">
+    <button class="pri" onclick="send('${id}','wa')">Send WhatsApp</button>
+    <button onclick="send('${id}','mail')">Send Email</button>
+    <button onclick="document.getElementById('dlg').close();render()" style="margin-left:auto">Close</button>
+  </div>
+  <div class="log">${r.log.slice().reverse().map(esc).join("<br>")||"No activity yet."}</div>`;
+  d.showModal();refreshMsg(id);
+}
+function refreshMsg(id){const e=employers.find(x=>x.id===id),r=rec(e);document.getElementById("msg").value=buildMsg(e,r,document.getElementById("mt").value)}
+function saveEmp(id){
+  const e=employers.find(x=>x.id===id),r=rec(e);
+  r.status=document.getElementById("st").value;r.due=document.getElementById("due").value;r.note=document.getElementById("note").value;
+  const was=r.pay.paid;r.pay={paid:document.getElementById("pp").value==="1",amount:document.getElementById("pa").value,date:document.getElementById("pd").value,challan:document.getElementById("pc").value.trim()};
+  if(r.pay.paid&&!r.pay.date)r.pay.date=iso(today());
+  if(r.pay.paid!==was)r.log.push(`${new Date().toLocaleString("en-IN")} – PT marked ${r.pay.paid?"PAID":"NOT paid"}`);
+  r.docs=[...document.querySelectorAll(".dc")].filter(c=>c.checked).map(c=>+c.dataset.i);
+  r.log.push(`${new Date().toLocaleString("en-IN")} – saved: ${STATUS[r.status]}, docs ${r.docs.length}/${DOCS.length}`);
+  save();refreshMsg(id);
+}
+async function send(id,ch){
+  const e=employers.find(x=>x.id===id),r=rec(e),t=document.getElementById("mt").value,msg=document.getElementById("msg").value;
+  await deliver(ch,e,r,t,msg);
+  openEmp(id);
+}
+async function deliver(ch,e,r,t,msg){
+  const body={channel:ch,to:ch==="wa"?e.phone:e.email,subject:ch==="mail"?subject(e,r,t):"",text:msg};
+  try{
+    const res=await fetch("/api/send",{method:"POST",body:JSON.stringify(body)}).then(x=>x.json());
+    if(!res.ok)throw new Error(res.error);
+    logSend(e,r,ch,t,res.mock?" (auto, mock)":" (auto)");return true;
+  }catch(err){ // no server (opened as file) or API error: fall back to click-to-send
+    logSend(e,r,ch,t,"");window.open(ch==="wa"?waUrl(e,msg):mailUrl(e,subject(e,r,t),msg),"_blank");return false;
+  }
+}
+function logSend(e,r,ch,t,tag=""){
+  r.lastReminder=iso(today());
+  if(r.status==="none"||r.status==="rev"&&t==="rev")r.status="sent";
+  r.log.push(`${new Date().toLocaleString("en-IN")} – ${t==="rev"?"revision request":"reminder"} sent via ${ch==="wa"?"WhatsApp":"Email"}${tag}`);
+  save();
+}
+
+/* ---------- queue ---------- */
+function startQueue(){
+  const list=employers.filter(e=>needsReminder(e,rec(e)));
+  if(!list.length){alert("No reminders pending today.");return}
+  let i=0;const d=document.getElementById("dlg");
+  const step=()=>{
+    if(i>=list.length){d.close();render();return}
+    const e=list[i],r=rec(e),t=r.status==="rev"?"rev":"rem",msg=buildMsg(e,r,t);
+    d.innerHTML=`<h3 style="margin:0">Queue ${i+1} / ${list.length}: ${esc(e.name)}</h3><p class="muted">${esc(e.contact)} · ${esc(e.phone)} · ${esc(e.email)} · ${stage(r).t}</p>
+    <textarea id="qm">${esc(msg)}</textarea>
+    <div class="bar" style="margin-top:8px">
+      <button class="pri" id="qwa">WhatsApp & next</button><button id="qml">Email & next</button><button id="qb">Both & next</button><button id="qs">Skip</button>
+      <button id="qx" style="margin-left:auto">Stop</button></div>`;
+    const go=async(wa,ml)=>{const m=document.getElementById("qm").value;
+      if(wa)await deliver("wa",e,r,t,m);
+      if(ml)await deliver("mail",e,r,t,m);
+      i++;step()};
+    document.getElementById("qwa").onclick=()=>go(1,0);
+    document.getElementById("qml").onclick=()=>go(0,1);
+    document.getElementById("qb").onclick=()=>go(1,1);
+    document.getElementById("qs").onclick=()=>{i++;step()};
+    document.getElementById("qx").onclick=()=>{d.close();render()};
+  };
+  d.showModal();step();
+}
+
+/* ---------- add / settings / csv ---------- */
+function openAdd(){
+  const d=document.getElementById("dlg");
+  d.innerHTML=`<h3 style="margin:0">Add employer</h3>
+  <label>Business name</label><input id="an" style="width:100%"><label>Contact person</label><input id="ac" style="width:100%">
+  <div class="row"><div><label>WhatsApp number</label><input id="ap"></div><div><label>Email</label><input id="am"></div></div>
+  <label>No. of employees</label><input id="ae" type="number">
+  <div class="bar" style="margin-top:12px"><button class="pri" onclick="addEmp()">Save</button><button onclick="document.getElementById('dlg').close()">Cancel</button></div>`;
+  d.showModal();
+}
+function addEmp(){
+  const g=i=>document.getElementById(i).value.trim();
+  if(!g("an"))return;
+  employers.push({id:"e"+Date.now(),name:g("an"),contact:g("ac"),phone:g("ap"),email:g("am"),employees:+g("ae")||0});
+  document.getElementById("dlg").close();render();
+}
+function openSettings(){
+  const d=document.getElementById("dlg");
+  d.innerHTML=`<h3 style="margin:0">Settings</h3>
+  <div class="row"><div><label>Firm name</label><input id="sf" value="${esc(S.firm)}"></div><div><label>Your name</label><input id="sn" value="${esc(S.sender)}"></div></div>
+  <div class="row"><div><label>Your phone</label><input id="sp" value="${esc(S.phone)}"></div><div><label>Message language</label><select id="sl"><option value="en" ${S.lang==="en"?"selected":""}>English</option><option value="mr" ${S.lang==="mr"?"selected":""}>मराठी</option></select></div></div>
+  <label>Due date rule: day of month (31 = last day)</label>
+  <div class="row"><input id="sd" type="number" min="1" max="31" value="${S.dueDay}"><select id="so"><option value="0" ${S.dueMonthOffset==0?"selected":""}>in the same month as the period</option><option value="1" ${S.dueMonthOffset==1?"selected":""}>in the month after the period</option></select></div>
+  <div class="row"><div><label>Send first reminder N days before due</label><input id="sld" type="number" value="${S.leadDays}"></div><div><label>Repeat follow-up every N days</label><input id="sr" type="number" value="${S.repeatDays}"></div></div>
+  <div class="row"><div><label>Auto-send daily (needs server running + this tab open)</label><select id="sa"><option value="0" ${S.autoOn?"":"selected"}>Off</option><option value="1" ${S.autoOn?"selected":""}>On</option></select></div><div><label>Time</label><input id="stm" type="time" value="${S.autoTime}"></div></div>
+  <p class="muted">Check the due-date rule against the MPT Act schedule for your clients — it is an editable assumption. Changing it affects periods opened afterwards; you can also edit each employer's due date.</p>
+  <div class="bar"><button class="pri" onclick="saveSettings()">Save</button><button onclick="document.getElementById('dlg').close()">Cancel</button></div>`;
+  d.showModal();
+}
+function saveSettings(){
+  const v=i=>document.getElementById(i).value;
+  S={...S,firm:v("sf"),sender:v("sn"),phone:v("sp"),lang:v("sl"),dueDay:+v("sd")||31,dueMonthOffset:+v("so"),leadDays:+v("sld"),repeatDays:+v("sr")||2,autoOn:v("sa")==="1",autoTime:v("stm")||"09:00"};
+  document.getElementById("dlg").close();render();
+}
+document.getElementById("csv").onchange=ev=>{
+  const f=ev.target.files[0];if(!f)return;
+  f.text().then(t=>{
+    const lines=t.split(/\r?\n/).filter(Boolean),h=lines.shift().split(",").map(x=>x.trim().toLowerCase());
+    const idx=k=>h.indexOf(k);let n=0;
+    lines.forEach((l,i)=>{const c=l.split(",").map(x=>x.trim());
+      if(!c[idx("name")])return;
+      employers.push({id:"i"+Date.now()+i,name:c[idx("name")],contact:c[idx("contact")]||"",phone:c[idx("phone")]||"",email:c[idx("email")]||"",employees:+c[idx("employees")]||0});n++});
+    alert(`Imported ${n} employers. CSV columns: name,contact,phone,email,employees`);render();
+  });
+};
+function exportCsv(){
+  const rows=[["Employer","Contact","Phone","Email","Period","Due","Status","Docs received","Last reminder","PT paid","Amount","Paid date","Challan"]];
+  employers.forEach(e=>{const r=rec(e);rows.push([e.name,e.contact,e.phone,e.email,P(),r.due,STATUS[r.status],`${r.docs.length}/${DOCS.length}`,r.lastReminder||"",r.pay.paid?"Yes":"No",r.pay.amount,r.pay.date,r.pay.challan])});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(",")).join("\n")],{type:"text/csv"}));
+  a.download=`pt-status-${P()}.csv`;a.click();
+}
+
+/* ---------- daily auto-send (runs while this tab is open) ---------- */
+async function autoRun(){
+  if(!S.autoOn)return;
+  const now=new Date(),hm=`${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  if(hm<S.autoTime||S.lastAuto===iso(today()))return;
+  try{if(!(await fetch("/api/ping").then(x=>x.json())).ok)return}catch(e){return} // never fall back to popups unattended
+  S.lastAuto=iso(today());save();
+  let n=0;
+  for(const e of employers.filter(e=>needsReminder(e,rec(e)))){
+    const r=rec(e),t=r.status==="rev"?"rev":"rem",m=buildMsg(e,r,t);
+    if(e.phone)await deliver("wa",e,r,t,m);
+    if(e.email)await deliver("mail",e,r,t,m);
+    n++;
+  }
+  document.getElementById("hint").textContent=`Auto-send ran at ${hm}: ${n} employer(s) messaged`;
+  save();
+}
+setInterval(autoRun,60000);setTimeout(autoRun,2000);
+
+/* ---------- init ---------- */
+(function(){
+  const t=today(),el=document.getElementById("period");
+  // default period: previous month when due date falls in the following month
+  const base=new Date(t.getFullYear(),t.getMonth()-S.dueMonthOffset,1);
+  el.value=`${base.getFullYear()}-${pad(base.getMonth()+1)}`;
+  el.onchange=render;render();
+})();
+</script>
+</body>
+</html>
